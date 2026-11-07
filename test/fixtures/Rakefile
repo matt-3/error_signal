@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+# Loaded by test/fixtures/command_app.rb. Loading the app's tasks is what
+# installs Error Signal's rake hook, as in a real app's Rakefile.
+Rails.application.load_tasks
+
+task :boom do
+  raise KeyError, "boom in a rake task"
+end
+
+task outer: :inner
+
+task :inner do
+  raise IndexError, "boom in a prerequisite"
+end
+
+task :recorded do
+  Rails.error.record { raise KeyError, "recorded in a rake task" }
+end
+
+task :stop do
+  abort "stopped on purpose"
+end
