@@ -564,7 +564,7 @@ class ErrorSignalTest < ErrorSignalTestCase
     posts = capturing_posts { report(raised, handled: true, context: full_context, source: "application") }
 
     assert_equal "en", ErrorSignal.locale
-    assert_equal [ "Level", "Source", "Request", "Request ID", "Job", "Job ID", "Task", "Location", "Backtrace", "Release" ], field_names(posts.first)
+    assert_equal [ "Level", "Source", "Request", "Request ID", "Job", "Job ID", "Task", "Location", "Code", "Backtrace", "Release" ], field_names(posts.first)
     assert_equal "error (handled)", field_value(posts.first, "Level")
   end
 
@@ -576,7 +576,7 @@ class ErrorSignalTest < ErrorSignalTestCase
     posts = capturing_posts { report(raised, handled: true, context: full_context, source: "application") }
 
     assert_equal "pt-BR", ErrorSignal.locale
-    assert_equal [ "Nível", "Origem", "Requisição", "ID da requisição", "Job", "ID do job", "Task", "Local", "Backtrace", "Release" ], field_names(posts.first)
+    assert_equal [ "Nível", "Origem", "Requisição", "ID da requisição", "Job", "ID do job", "Task", "Local", "Código", "Backtrace", "Release" ], field_names(posts.first)
     assert_equal "error (tratado)", field_value(posts.first, "Nível")
   end
 
@@ -596,7 +596,7 @@ class ErrorSignalTest < ErrorSignalTestCase
     end
 
     assert_equal "en", ErrorSignal.locale
-    assert_equal [ "Level", "Source", "Location", "Backtrace" ], field_names(posts.first)
+    assert_equal [ "Level", "Source", "Location", "Code", "Backtrace" ], field_names(posts.first)
   end
 
   test "the sanitization failure marker is localized" do

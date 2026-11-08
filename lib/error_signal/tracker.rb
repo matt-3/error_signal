@@ -5,7 +5,9 @@ module ErrorSignal
   # "error_signal:" prefix. Per occurrence it costs one read and
   # up to three increments (burst, day and spike counters), plus a few
   # writes when a group starts a burst, shows up for the first time in the
-  # day, or its state is due for a refresh (at most once a minute).
+  # day, or its state is due for a refresh (at most once a minute). When the
+  # context names a user, one more read, and a write for a person not yet
+  # counted in the burst.
   #
   # Keys (each with its own expiry, nothing lives forever):
   #
@@ -16,6 +18,7 @@ module ErrorSignal
   #   d:<day>:n            groups seen in the day: slot counter (15 days)
   #   d:<day>:i:<slot>     the group id in that slot (15 days)
   #   d:<day>:m:<id>       what the reports show about the group (15 days)
+  #   u:<id>:<burst>       the people seen in the burst, as short hashes (30 days)
   #   history              14 days of daily summaries, rewritten by every report
   #
   # Increments are atomic in every Rails cache store, so counts hold across
@@ -40,9 +43,11 @@ module ErrorSignal
     REFRESH_LIMIT = 60
 
     SAMPLE_LIMIT = 150
+    # People counted per burst; past this the alert says "100+".
+    PEOPLE_LIMIT = 100
 
     Occurrence = Struct.new(:post, :count, :started_at, :new_group, :regressed,
-      :previous_seen_at, :previous_release, :spike, keyword_init: true) do
+      :previous_seen_at, :previous_release, :spike, :burst, :people, keyword_init: true) do
       # The cache did not answer: post, without markers or counts.
       def degraded?
         count.nil?
@@ -113,11 +118,34 @@ module ErrorSignal
         regressed: regressed && first,
         previous_seen_at: last_seen,
         previous_release: state && state["r"],
-        spike: spike
+        spike: spike,
+        burst: burst
       )
     rescue StandardError => e
       ErrorSignal.log_failure("grouping unavailable, posting without it", e)
       DEGRADED
+    end
+
+    # Adds `person` (the user id the app put in the context) to the people
+    # seen in this burst of the group, and returns how many there are (up to
+    # PEOPLE_LIMIT). The cache keeps a short hash, not the id. Read and
+    # written without a lock: two processes adding a new person at the same
+    # instant can count one of them only on its next occurrence. nil when the
+    # cache fails.
+    def track_person(id, burst, person)
+      cache = Rails.cache
+      key = people_key(id, burst)
+      digest = ::Digest::SHA256.hexdigest(person.to_s)[0, 12]
+      seen = cache.read(key)
+      seen = [] unless seen.is_a?(Array)
+      if !seen.include?(digest) && seen.size < PEOPLE_LIMIT
+        seen += [ digest ]
+        cache.write(key, seen, expires_in: STATE_TTL)
+      end
+      seen.size
+    rescue StandardError => e
+      ErrorSignal.log_failure("people count unavailable", e)
+      nil
     end
 
     # Seen before, quiet for at least a day, and last seen in another release.
@@ -195,6 +223,7 @@ module ErrorSignal
         state = cache.read(state_key(id))
         if state.is_a?(Hash) && !state["b"].nil?
           cache.delete(burst_key(id, state["b"]))
+          cache.delete(people_key(id, state["b"]))
           cache.write(state_key(id), state.merge("b" => nil, "s" => nil), expires_in: STATE_TTL)
         end
         [ bucket, bucket - 1 ].each { |b| cache.delete(spike_key(id, b)) }
@@ -253,6 +282,10 @@ module ErrorSignal
 
     def burst_key(id, burst)
       "#{PREFIX}:b:#{id}:#{burst}"
+    end
+
+    def people_key(id, burst)
+      "#{PREFIX}:u:#{id}:#{burst}"
     end
 
     def spike_key(id, bucket)

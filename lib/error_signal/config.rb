@@ -82,6 +82,22 @@ module ErrorSignal
       flag("ERROR_SIGNAL_REPORT_HANDLED", true)
     end
 
+    # The context the app passes with the error, shown in the alert.
+    def context?
+      flag("ERROR_SIGNAL_CONTEXT", true)
+    end
+
+    # The user in the alert and the people count (Person).
+    def user?
+      flag("ERROR_SIGNAL_USER", true)
+    end
+
+    # The process that raised: ERROR_SIGNAL_PROCESS, or DYNO, which Dokku
+    # and Heroku set ("web.1", "worker.1").
+    def process_name
+      ENV["ERROR_SIGNAL_PROCESS"].presence || ENV["DYNO"].presence
+    end
+
     def ignore_crawlers?
       flag("ERROR_SIGNAL_IGNORE_CRAWLERS", true)
     end

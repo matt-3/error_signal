@@ -18,6 +18,25 @@ module ErrorSignal
     BACKTRACE_LINES = 5
     BACKTRACE_LINE_LIMIT = 200
 
+    # The context the app passed: keys and value length in the alert, and
+    # in the attachment.
+    CONTEXT_KEYS = 15
+    CONTEXT_VALUE_LIMIT = 200
+    DETAILS_CONTEXT_KEYS = 50
+    DETAILS_CONTEXT_VALUE_LIMIT = 1000
+
+    # The chain of causes (error.cause): levels in the alert, and in the
+    # attachment, each with its own backtrace there.
+    CAUSES = 3
+    CAUSE_MESSAGE_LIMIT = 300
+    CAUSE_FIELD_LIMIT = 600
+    DETAILS_CAUSES = 10
+    DETAILS_CAUSE_BACKTRACE_LINES = 50
+
+    # Code lines around the failing app line in the attachment (the alert
+    # shows the line alone).
+    DETAILS_CODE_AROUND = 3
+
     # The attachment with the full text, when the message had to cut it.
     DETAILS_TEXT_LIMIT = 100_000
     DETAILS_BACKTRACE_LINES = 200
@@ -29,19 +48,20 @@ module ErrorSignal
 
     module_function
 
-    def build(error, fingerprint:, occurrence:, level:, handled:, context:, source:, now: Time.now.to_i)
+    def build(error, fingerprint:, occurrence:, level:, handled:, context:, source:, person: nil, now: Time.now.to_i)
       name = Config.app_name
+      fields, fields_cut = fields_for(error, occurrence, level, handled, context, source, now, person)
       embed = {
         title: Text.truncate(title(name, fingerprint.exception_class, occurrence, now), TITLE_LIMIT),
         description: description_for(error),
         color: color_for(level),
-        fields: fields_for(error, occurrence, level, handled, context, source, now),
+        fields: fields,
         footer: footer(name),
         timestamp: Time.at(now).utc.iso8601
       }
-      fit_embed!(embed)
+      description_cut = fit_embed!(embed)
       result = payload(embed, mention: occurrence.new_group || occurrence.regressed)
-      result[:attachment] = error_details(error, embed, fingerprint) if cut?(error)
+      result[:attachment] = error_details(error, embed, fingerprint, context) if fields_cut || description_cut || cut?(error)
       result
     end
 
@@ -55,10 +75,11 @@ module ErrorSignal
       lines.size > BACKTRACE_LINES || lines.any? { |line| line.length > BACKTRACE_LINE_LIMIT }
     end
 
-    # A text file with the alert's fields, the whole message and the whole
-    # backtrace (gem lines included, up to DETAILS_BACKTRACE_LINES), all
-    # sanitized.
-    def error_details(error, embed, fingerprint)
+    # A text file with the alert's fields, the whole message, the code
+    # around the failing app line, the whole backtrace (gem lines included,
+    # up to DETAILS_BACKTRACE_LINES), the context and the chain of causes,
+    # all sanitized.
+    def error_details(error, embed, fingerprint, context = {})
       lines = [ embed[:title], "" ]
       embed[:fields].each do |f|
         lines << "#{f[:name]}: #{f[:value]}" unless f[:value].start_with?("```")
@@ -67,10 +88,45 @@ module ErrorSignal
       message = Text.truncate(Fingerprint.message_of(error).to_s, DETAILS_TEXT_LIMIT)
       lines << "" << "#{t(:message)}:" << ErrorSignal.sanitize(message)
 
+      app_line = Text.app_lines(error.backtrace, 1).first
+      code = Text.source_lines(app_line, around: DETAILS_CODE_AROUND)
+      if code.any?
+        number = app_line[/:(\d+)/, 1].to_i
+        text = code.map { |index, line| "#{index == number ? '>' : ' '} #{index}  #{line}" }.join("\n")
+        lines << "" << "#{t(:code)} (#{app_line.split(':').first}):" << ErrorSignal.sanitize(text)
+      end
+
       backtrace = Array(error.backtrace).first(DETAILS_BACKTRACE_LINES).map { |line| Text.relative_path(line) }
       lines << "" << "#{t(:backtrace)}:" << ErrorSignal.sanitize(backtrace.join("\n")) if backtrace.any?
 
+      if Config.context?
+        context_lines, = ContextText.lines(context, max_keys: DETAILS_CONTEXT_KEYS, value_limit: DETAILS_CONTEXT_VALUE_LIMIT)
+        lines << "" << "#{t(:context)}:" << context_lines.join("\n") if context_lines.any?
+      end
+
+      causes_of(error, DETAILS_CAUSES).each_with_index do |cause, index|
+        lines << "" << "#{t(:cause)} #{index + 1}: #{cause.class.name}"
+        lines << ErrorSignal.sanitize(Text.truncate(Fingerprint.message_of(cause).to_s, DETAILS_TEXT_LIMIT))
+        trace = Array(cause.backtrace).first(DETAILS_CAUSE_BACKTRACE_LINES).map { |line| Text.relative_path(line) }
+        lines << ErrorSignal.sanitize(trace.join("\n")) if trace.any?
+      end
+
       attachment("error-#{fingerprint.id}", lines)
+    end
+
+    # error.cause, its cause and so on, up to `limit`, stopping at a loop.
+    def causes_of(error, limit)
+      chain = []
+      seen = [ error ]
+      cause = error.cause
+      while cause && chain.size < limit && seen.none? { |e| e.equal?(cause) }
+        chain << cause
+        seen << cause
+        cause = cause.cause
+      end
+      chain
+    rescue StandardError
+      []
     end
 
     # { filename:, content: } for Delivery: "<app>-<name>.txt".
@@ -171,7 +227,8 @@ module ErrorSignal
       payload
     end
 
-    # "[app] [NEW] NoMethodError", "[app] NoMethodError - 8th time in 12 min"
+    # "[app] [NEW] NoMethodError", "[app] NoMethodError - 8th time in 12 min",
+    # "[app] NoMethodError - 8th time in 12 min · 3 people"
     def title(name, exception_class, occurrence, now)
       marker =
         if occurrence.new_group then "[#{t(:marker_new)}] "
@@ -182,8 +239,16 @@ module ErrorSignal
       if count >= 2
         ordinal = Text.ordinal(count, ErrorSignal.locale)
         repeat = " - #{t(:nth_time, ordinal: ordinal, elapsed: Text.duration(now - occurrence.started_at.to_i))}"
+        repeat += " · #{people(occurrence.people)}" if occurrence.people.to_i.positive?
       end
       "[#{name}] #{marker}#{exception_class}#{repeat}"
+    end
+
+    # "1 person", "5 people", "100+ people"
+    def people(count)
+      return t(:people_many, count: "#{Tracker::PEOPLE_LIMIT}+") if count >= Tracker::PEOPLE_LIMIT
+
+      count == 1 ? t(:people_one) : t(:people_many, count: count)
     end
 
     # The exception message may contain PII (an e-mail in "user not found:
@@ -195,7 +260,10 @@ module ErrorSignal
       Text.code_block(ErrorSignal.sanitize(message), MESSAGE_LIMIT)
     end
 
-    def fields_for(error, occurrence, level, handled, context, source, now)
+    # [fields, cut]: `cut` tells whether the context or the causes did not
+    # fit and go whole only in the attachment.
+    def fields_for(error, occurrence, level, handled, context, source, now, person = nil)
+      cut = false
       fields = [ field(:level, handled ? "#{level} (#{t(:handled)})" : level, inline: true) ]
       fields << field(:source, Text.truncate(source, 100), inline: true) if source.present?
 
@@ -211,12 +279,39 @@ module ErrorSignal
 
       task = context[:rake_task]
       fields << field(:task, Text.truncate(ErrorSignal.sanitize(task), 200), inline: true) if task.present?
+      fields << field(:user, Text.truncate(ErrorSignal.sanitize(person.label), 100), inline: true) if person
+      process = Config.process_name
+      fields << field(:process, Text.truncate(ErrorSignal.sanitize(process), 100), inline: true) if process
+
+      if Config.context?
+        context_lines, context_cut = ContextText.lines(context, max_keys: CONTEXT_KEYS, value_limit: CONTEXT_VALUE_LIMIT)
+        if context_lines.any?
+          text = Text.fit_lines(context_lines, FIELD_VALUE_LIMIT - 8)
+          cut ||= context_cut || text.length < context_lines.join("\n").length
+          fields << field(:context, Text.code_block(text, FIELD_VALUE_LIMIT - 8))
+        end
+      end
 
       culprit = Array(error.backtrace).first
       fields << field(:location, Text.truncate(ErrorSignal.sanitize(Text.relative_path(culprit)), 300)) if culprit.present?
 
+      app_line = Text.app_lines(error.backtrace, 1).first
+      code = Text.source_lines(app_line).first
+      if code
+        value = "#{app_line.split(':in ').first}\n#{Text.truncate(code[1].strip, BACKTRACE_LINE_LIMIT)}"
+        fields << field(:code, Text.code_block(ErrorSignal.sanitize(value), FIELD_VALUE_LIMIT - 8))
+      end
+
       backtrace = Text.app_lines(error.backtrace, BACKTRACE_LINES).map { |line| Text.truncate(line, BACKTRACE_LINE_LIMIT) }
       fields << field(:backtrace, Text.code_block(ErrorSignal.sanitize(backtrace.join("\n")), FIELD_VALUE_LIMIT - 8)) if backtrace.any?
+
+      causes = causes_of(error, CAUSES + 1)
+      if causes.any?
+        cut ||= causes.size > CAUSES
+        text = causes.first(CAUSES).map { |cause| cause_text(cause) }.join("\n")
+        cut ||= text.length > CAUSE_FIELD_LIMIT || causes.first(CAUSES).any? { |c| Fingerprint.message_of(c).to_s.length > CAUSE_MESSAGE_LIMIT }
+        fields << field(:cause, Text.code_block(text, CAUSE_FIELD_LIMIT))
+      end
 
       release = Config.release
       fields << field(:release, Text.truncate(release, 100), inline: true) if release.present?
@@ -226,7 +321,17 @@ module ErrorSignal
         fields << field(:previously, value, inline: true)
       end
 
-      fields
+      [ fields, cut ]
+    end
+
+    # "PG::ConnectionBad: could not connect" and, on the next line, where it
+    # was raised in the app (or its first line, when no line is the app's).
+    def cause_text(cause)
+      message = Fingerprint.message_of(cause).to_s.tr("\r\n", "  ")
+      head = message.empty? ? cause.class.name.to_s : "#{cause.class.name}: #{Text.truncate(message, CAUSE_MESSAGE_LIMIT)}"
+      where = Text.app_lines(cause.backtrace, 1).first || Text.relative_path(Array(cause.backtrace).first)
+      text = where.present? ? "#{head}\n  #{Text.truncate(where, BACKTRACE_LINE_LIMIT)}" : head
+      ErrorSignal.sanitize(text)
     end
 
     def field(key, value, inline: false)
@@ -299,12 +404,14 @@ module ErrorSignal
     # Discord rejects the whole message when the embed passes 6000
     # characters. The fixed limits keep it well below that; this is the
     # last guard, shrinking the description (the longest part) if needed.
+    # Returns true when it had to cut.
     def fit_embed!(embed)
       embed[:description] = Text.truncate(embed[:description], DESCRIPTION_LIMIT)
       excess = embed_size(embed) - EMBED_LIMIT
-      return unless excess.positive?
+      return false unless excess.positive?
 
       embed[:description] = Text.truncate(embed[:description], [ embed[:description].length - excess, 20 ].max)
+      true
     end
 
     def embed_size(embed)

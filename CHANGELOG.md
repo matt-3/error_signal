@@ -3,6 +3,33 @@
 All notable changes to this project are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/), and each one is a `vX.Y.Z` git tag.
 
+## v1.1.0 - 2026-11-07
+
+Alerts carry what you need to act on an error without opening another tool. Nothing to
+change in the app: each new field shows only when there is something to show, and none
+of them changes the grouping.
+
+- **User.** The logged-in user's id (`User#42`, never a name or an e-mail), found on its
+  own through the controller's `current_user` or `Current.user`, or given as `user_id` (or
+  a `user` record) in the context. An app with neither has no User field; a lookup that
+  fails leaves it out and the alert goes anyway. `ERROR_SIGNAL_USER=false` turns it off.
+- **People reached.** With the user known, a repeated error says how many people it
+  reached in the burst: `8th time in 12 min · 5 people` (up to `100+`). The cache keeps a
+  short hash of each id, not the id.
+- **Context.** What the app passes with the error (`Rails.error.report(e, context:)`,
+  `Rails.error.set_context`, `ErrorSignal.notify(e, context:)`) as `key: value` lines. What
+  Rails puts there itself is left out; `tags` is flattened; a record shows as `Order#42`,
+  any other object as its class name, never its `inspect`; a key named like a secret shows
+  `[FILTERED]`. `ERROR_SIGNAL_CONTEXT=false` turns it off.
+- **Cause.** `error.cause`, up to three levels, each with where it was raised.
+- **Code.** The failing app line, read from the file, below the location.
+- **Process.** `web.1`, `worker.1`, from `DYNO` (Dokku, Heroku) or `ERROR_SIGNAL_PROCESS`.
+- **The attached file** also carries every context key, the whole chain of causes with
+  their backtraces and three lines of code around the failing one. It goes whenever the
+  context or the causes did not fit, or the embed had to shorten the message.
+- **README.** A "What it is for" section: Error Signal alerts on an error happening now;
+  it is not an error tracker, and works next to one.
+
 ## v1.0.0 - 2026-11-07
 
 First release: Sentry-like alerts and daily/weekly error reports for Rails, posted to

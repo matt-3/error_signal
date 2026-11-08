@@ -35,7 +35,7 @@ AVATAR = "#be123c"
 
 # -- the payloads, as the gem built them ---------------------------------------------------
 
-FOOTER = "Error Signal 1.0.0 · shop · production"
+FOOTER = "Error Signal 1.1.0 · shop · production"
 
 ALERT = {
     "content": "@here",
@@ -49,7 +49,11 @@ ALERT = {
             ("Request", "OrdersController#create", True),
             ("Route", "POST /orders", True),
             ("Request ID", "8c0e7f52-4b1a-4d3e-9f6a-2b7c1d9e0a14", True),
+            ("User", "User#4410", True),
+            ("Process", "web.1", True),
+            ("Context", "```\ncart_id: 8812\ncoupon: BLACKFRIDAY\n```", False),
             ("Location", "app/services/checkout.rb:27:in 'Checkout#charge'", False),
+            ("Code", "```\napp/services/checkout.rb:27\ntotal = order.cart.total_cents - discount\n```", False),
             ("Backtrace", "```\napp/services/checkout.rb:27:in 'Checkout#charge'\n"
                           "app/services/checkout.rb:12:in 'Checkout#call'\n"
                           "app/controllers/orders_controller.rb:18:in 'OrdersController#create'\n```", False),
@@ -61,7 +65,7 @@ ALERT = {
 
 REPEAT = {
     "embed": {
-        "title": "[shop] Payments::GatewayError - 8th time in 12 min",
+        "title": "[shop] Payments::GatewayError - 8th time in 12 min · 5 people",
         "description": "```\ncapture failed: gateway returned 504\n```",
         "color": 0xE74C3C,
         "fields": [
@@ -69,9 +73,12 @@ REPEAT = {
             ("Source", "application.solid_queue", True),
             ("Job", "Payments::CaptureJob", True),
             ("Job ID", "5b3f0d2e-91c4-4a7b-b0e8-6d2c4f1a9e37", True),
+            ("Process", "worker.1", True),
             ("Location", "app/services/payments/gateway.rb:44:in 'Payments::Gateway#capture'", False),
             ("Backtrace", "```\napp/services/payments/gateway.rb:44:in 'Payments::Gateway#capture'\n"
                           "app/jobs/payments/capture_job.rb:9:in 'Payments::CaptureJob#perform'\n```", False),
+            ("Cause", "```\nNet::ReadTimeout: Net::ReadTimeout with #<TCPSocket:(closed)>\n"
+                      "  app/services/payments/gateway.rb:41:in 'Payments::Gateway#post'\n```", False),
             ("Release", "3f2a9c1", True),
         ],
         "footer": FOOTER,
@@ -224,7 +231,16 @@ def layout(line: str, width: float, size=14):
     """Word-wraps one markdown line: a list of visual lines, each [(dx, text, style, w)]."""
     tokens = []  # (text, style), spaces kept as their own tokens
     for text, style in runs(line):
-        tokens.extend((piece, style) for piece in re.split(r"( +)", text) if piece)
+        for piece in re.split(r"( +)", text):
+            # A word wider than the column breaks anywhere, as Discord does (a UUID).
+            while piece and not piece.isspace() and measure(piece, size, style) > width:
+                cut = len(piece)
+                while cut > 1 and measure(piece[:cut], size, style) > width:
+                    cut -= 1
+                tokens.append((piece[:cut], style))
+                piece = piece[cut:]
+            if piece:
+                tokens.append((piece, style))
     lines, current, x = [], [], 0.0
     for text, style in tokens:
         w = measure(text, size, style)
@@ -381,13 +397,15 @@ IMAGES = {
         [("Today at 10:42", ALERT)],
         "An Error Signal alert on Discord",
         "The first occurrence of a new error, marked NEW and with an @here mention: the exception "
-        "message, the level, the source, the controller action, the route and the request id, the location, the "
-        "app lines of the backtrace and the release.",
+        "message, the level, the source, the controller action, the route, the request id, the logged-in user and the process, "
+        "the context the app passed, the location with its line of code, the app lines of the backtrace "
+        "and the release.",
     ),
     "repeat": (
         [("Today at 14:15", REPEAT), ("Today at 14:27", SPIKE)],
         "Repetition and spike messages from Error Signal on Discord",
-        "An error in a job posted on its 8th occurrence in 12 minutes, with the job class and id; "
+        "An error in a job posted on its 8th occurrence in 12 minutes, reaching 5 people, with the "
+        "job class and id, the process and the timeout that caused it; "
         "below it, the SPIKE message with an @here mention when the same error passes 50 "
         "occurrences in 5 minutes.",
     ),

@@ -16,7 +16,7 @@ um relatório diário e outro semanal no mesmo canal.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/alert-dark.svg">
-  <img alt="Um alerta do Error Signal no Discord: um NoMethodError marcado NEW com menção @here, a mensagem, o nível, a origem, OrdersController#create com a rota POST /orders e o ID da requisição, o local, as linhas da app no backtrace e a release" src="docs/assets/alert-light.svg" width="720">
+  <img alt="Um alerta do Error Signal no Discord: um NoMethodError marcado NEW com menção @here, a mensagem, o nível, a origem, OrdersController#create com a rota POST /orders, o ID da requisição, o usuário logado e o processo, o contexto que a app passou, o local com a linha de código, as linhas da app no backtrace e a release" src="docs/assets/alert-light.svg" width="720">
 </picture>
 
 - **Nada para rodar.** Sem serviço, sem agente, sem banco: uma linha no Gemfile e a URL de
@@ -24,21 +24,44 @@ um relatório diário e outro semanal no mesmo canal.
 - **Alertas que dizem o que mudou.** `[NEW]`, `[REGRESSED]` depois de um deploy, `[SPIKE]`.
   Um erro repetido posta na 1ª, 2ª, 4ª, 8ª... ocorrência, então um loop manda meia dúzia
   de mensagens, não centenas.
+- **O que você precisa para agir.** O usuário logado, o contexto que o seu código passa, a
+  causa, a linha de código que falhou, o processo e quantas pessoas o erro atingiu.
 - **Relatórios no canal.** Toda manhã o dia anterior, toda semana a tendência: totais,
   grupos mais frequentes, o que é novo, o que voltou, o que sumiu.
 - **Sem dados pessoais.** A mensagem, o backtrace e os IDs passam por um sanitizador antes
   de sair: o dado pessoal fica só com a parte que distingue um registro do outro
   (`•••.456.789-••`, `j•••@gmail.com`, `•••• 4242`), os segredos somem inteiros
-  (`[FILTERED]`). Nada mais da requisição sai: nem parâmetros, nem headers, URL, sessão ou
-  usuário.
+  (`[FILTERED]`). Do usuário, só o ID; além do contexto que o seu próprio código passa,
+  nada da requisição sai: nem parâmetros, nem headers, URL, cookies ou sessão.
 - **Do seu jeito.** Você escolhe o que dispara pelo nível, pela classe, pela origem ou por
   uma regra em Ruby, e manda os seus próprios avisos com o `ErrorSignal.message`.
 - **Seguro em produção.** Nunca levanta erro, nunca segura uma requisição (o POST roda
   numa thread com timeouts curtos) e custa poucas operações de cache por erro.
 - **Com ou sem o Sentry.** Os dois escutam o `Rails.error` lado a lado.
 
+## Para que serve
+
+O Error Signal avisa, no canal que você já acompanha, que um erro está acontecendo
+**agora**: o que é, em que ponto do código, com quem e com que frequência, e se é novo ou
+voltou depois de um deploy. É só isso. Ele não é um rastreador de erros:
+
+| Ele responde | Ele não guarda |
+|---|---|
+| Tem algo quebrando agora? Desde quando, quantas vezes, para quantas pessoas? | Cada ocorrência, uma a uma, com a requisição dela |
+| É novo, ou o último deploy trouxe de volta? | Uma lista de erros para navegar, buscar, atribuir ou marcar como resolvido |
+| Em que ponto do código, com que contexto e qual causa? | Parâmetros, headers, breadcrumbs ou os passos antes do erro |
+| Como foram ontem e a semana? | Meses de histórico, desempenho, traces, erros do navegador |
+
+A memória dele são alguns contadores no `Rails.cache`, o bastante para separar o novo do
+que voltou, contar uma rajada e escrever os relatórios diário e semanal. Quando for preciso
+investigar depois, use um rastreador: o [Sentry](https://sentry.io), ou a
+[solid_errors](https://github.com/fractaledmind/solid_errors) no seu próprio banco. Os dois
+escutam o `Rails.error` ao lado do Error Signal: o alerta vem para cá e o arquivo fica lá
+([junto com o Sentry](#junto-com-o-sentry)).
+
 ## Conteúdo
 
+- [Para que serve](#para-que-serve)
 - [Começo rápido](#começo-rápido)
 - [O que ela captura](#o-que-ela-captura)
 - [Alertas](#alertas)
@@ -137,8 +160,10 @@ Toda mensagem é postada como **Error Signal**, com o nome da app no título e n
 então várias apps podem dividir um canal. O embed é vermelho para `error`, laranja para
 `warning`, azul para `info` e roxo para um pico. Cada alerta diz onde o erro aconteceu: a
 origem, a action do controller e a rota (`GET /orders/:id`, o padrão que o Rails
-encontrou, nunca a URL), o ID da requisição, ou o job e o ID dele, mais o local, as linhas
-da app no backtrace e a release.
+encontrou, nunca a URL), o ID da requisição, ou o job e o ID dele, mais o usuário, o
+processo, o contexto que o seu código passou, o local com a linha de código, as linhas da
+app no backtrace, a cadeia de causas e a release. Um erro repetido diz também quantas
+pessoas atingiu ([Usuário, contexto, causa e código](#usuário-contexto-causa-e-código)).
 
 ### Agrupamento
 
@@ -176,7 +201,7 @@ uma mensagem `[SPIKE]` à parte, uma vez por janela, mesmo com muitos workers.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/repeat-dark.svg">
-  <img alt="Duas mensagens do Error Signal no Discord: um Payments::GatewayError num job postado como a 8ª vez em 12 min, com a classe e o ID do job; abaixo, a mensagem SPIKE com menção @here: mais de 50 ocorrências em 5 min" src="docs/assets/repeat-light.svg" width="720">
+  <img alt="Duas mensagens do Error Signal no Discord: um Payments::GatewayError num job postado como a 8ª vez em 12 min, atingindo 5 pessoas, com a classe e o ID do job, o processo e o Net::ReadTimeout que o causou; abaixo, a mensagem SPIKE com menção @here: mais de 50 ocorrências em 5 min" src="docs/assets/repeat-light.svg" width="720">
 </picture>
 
 ### Menção
@@ -186,6 +211,41 @@ separadas por espaço) vai só nas mensagens de erro novo, de volta e de pico. T
 define `allowed_mentions`, então nada mais nela pinga alguém: uma mensagem de exceção que
 contenha `@everyone` fica inerte.
 
+### Usuário, contexto, causa e código
+
+Nenhum deles muda o agrupamento, e cada um só aparece quando há o que mostrar.
+
+- **Usuário.** O ID do usuário logado, como `User#42`, nunca nome ou e-mail. Achado
+  sozinho, sem código na sua app: o `current_user` do controller (Devise e a maioria das
+  gems de login) ou o `Current.user` (o gerador de autenticação do Rails 8). Uma app sem
+  nenhum dos dois simplesmente fica sem o campo Usuário. Num job, ou para dizer o usuário
+  você mesmo, passe `user_id` (ou um registro `user`) no contexto. Se a busca do usuário
+  falhar (o banco de que o erro trata, por exemplo), o campo fica de fora e o alerta sai
+  assim mesmo. A `ERROR_SIGNAL_USER=false` desliga, junto com a contagem de pessoas.
+- **Pessoas.** Com o usuário conhecido, um erro repetido diz quantas pessoas atingiu na
+  rajada: `8ª vez em 12 min · 5 pessoas`. Uma pessoa batendo no mesmo erro de novo não é
+  cinco pessoas com o problema. O cache guarda um hash de 12 caracteres de cada ID, não o
+  ID, até 100 por rajada (depois, `100+ pessoas`). A conta é aproximada: dois processos que
+  veem uma pessoa nova no mesmo instante podem contar uma delas só na ocorrência seguinte.
+- **Contexto.** O que o seu código passa junto com o erro aparece em linhas `chave: valor`:
+  `Rails.error.report(e, context: { order_id: order.id })`, o `Rails.error.set_context` para
+  a requisição inteira, ou o `ErrorSignal.notify(e, context: ...)`. O que o próprio Rails põe
+  ali (o controller, o job, a requisição) fica de fora, porque o alerta já mostra como
+  Requisição, Rota e Job. As `tags` (convenção do Sentry) são achatadas, um hash dentro de
+  outro vira chaves com ponto (dois níveis), uma lista é unida (10 itens), um registro
+  aparece como `Order#42` e qualquer outro objeto pelo nome da classe, nunca pelo
+  `inspect`. Uma chave com nome de segredo (`password`, `token`, `api_key`, `secret`...)
+  mostra `[FILTERED]`, e o resto passa pelo sanitizador. Até 15 chaves de 200 caracteres; o
+  resto vai no arquivo anexado. A `ERROR_SIGNAL_CONTEXT=false` deixa o contexto de fora.
+- **Causa.** O `error.cause`, e a causa dele, até três níveis: a classe, a mensagem e onde
+  foi levantada. Uma cadeia mais longa vai inteira no arquivo anexado, cada causa com o
+  seu backtrace.
+- **Código.** A linha da app que falhou, lida do arquivo no servidor, abaixo do caminho
+  dela; o arquivo anexado traz três linhas antes e três depois. Um arquivo que mudou ou
+  sumiu (um deploy no meio) não mostra código.
+- **Processo.** `web.1`, `worker.1`: da `DYNO`, que o Dokku e o Heroku definem, ou da
+  `ERROR_SIGNAL_PROCESS`.
+
 ### Quando não cabe
 
 O Discord recusa uma mensagem com mais de 6000 caracteres no total, tenha quantos embeds
@@ -194,7 +254,7 @@ arquivo de texto com tudo, sanitizado:
 
 | Mensagem | O arquivo anexado |
 |---|---|
-| Alerta | os campos, a mensagem inteira e o backtrace inteiro, com as linhas das gems (até 200) |
+| Alerta | os campos, a mensagem inteira, o código em volta da linha que falhou, o backtrace inteiro com as linhas das gems (até 200), todas as chaves do contexto e a cadeia inteira de causas |
 | `ErrorSignal.message` | o texto inteiro e todos os campos |
 | Relatório diário | todos os grupos do dia, não só os 10 maiores |
 | Relatório semanal | todos os grupos das duas semanas, com as duas contagens (sempre, porque a mensagem lista só o que mais mudou) |
@@ -496,6 +556,8 @@ Variáveis de ambiente, lidas a cada uso (uma mudança vale sem reiniciar). As d
 |---|---|---|
 | `ERROR_SIGNAL_PII_RULES` | (nenhum) | Pacotes por país do sanitizador: `br`, `us`, `uk`, `in`, `eu`. |
 | `ERROR_SIGNAL_MASK` | `partial` | `partial` mantém a parte do dado pessoal que distingue um registro do outro; `full` troca o dado inteiro por `[FILTERED]`. Os segredos somem sempre inteiros. |
+| `ERROR_SIGNAL_CONTEXT` | `true` | `false` deixa de fora dos alertas o contexto que o seu código passa. |
+| `ERROR_SIGNAL_USER` | `true` | `false` deixa de fora dos alertas o ID do usuário e a contagem de pessoas. |
 
 ### Identidade e idioma
 
@@ -503,6 +565,7 @@ Variáveis de ambiente, lidas a cada uso (uma mudança vale sem reiniciar). As d
 |---|---|---|
 | `ERROR_SIGNAL_APP_NAME` | o nome do módulo da app | O nome no título e no rodapé (`loja` para `Loja::Application`). |
 | `ERROR_SIGNAL_RELEASE` | `SENTRY_RELEASE`, depois `GIT_REV` | A release mostrada nos alertas e usada para distinguir as voltas. |
+| `ERROR_SIGNAL_PROCESS` | `DYNO` | O processo mostrado nos alertas (`web.1`, `worker.1`). O Dokku e o Heroku definem a `DYNO`. |
 | `ERROR_SIGNAL_LOCALE` | `en` | Idioma das mensagens: `en` ou `pt-BR` (`pt_BR` e `pt` também valem). |
 
 Fixos de propósito: a janela do pico (5 minutos), a memória de um grupo (30 dias), o dia
@@ -511,9 +574,10 @@ quieto de uma volta, as chaves diárias (15 dias), o histórico (14 dias), os gr
 
 ## Sanitizador
 
-A mensagem da exceção, o local, o backtrace, o ID da requisição, o ID do job e o nome da
-task passam por um sanitizador antes de serem postados, e as amostras dos relatórios
-antes de serem guardadas. A falha é fechada: se ele levantar erro, sai
+A mensagem da exceção, o local, a linha de código, o backtrace, as causas, o contexto, o ID
+da requisição, o ID do job, o nome da task, o usuário e o processo passam por um
+sanitizador antes de serem postados, e as amostras dos relatórios antes de serem
+guardadas. A falha é fechada: se ele levantar erro, sai
 `[sanitization failed]` no lugar do texto. O sanitizador em uso é o seu, se você definir o
 `ErrorSignal.sanitizer` ([exemplo](#um-sanitizador-próprio)), ou o embutido
 `ErrorSignal::Sanitizer`, que tem duas camadas.
@@ -533,7 +597,7 @@ inteiros:
 | CPF | `•••.456.789-••`: os 6 dígitos do meio, como o governo mascara |
 | CNPJ | `••.345.678/0001-••`: 6 dígitos da raiz e a filial (os últimos dígitos são a filial, `0001` na maioria das empresas, e os verificadores) |
 | SSN, EIN, NI, Aadhaar, PAN | `•••-••-6789`: os 4 últimos |
-| Senhas, tokens, chaves, cookies, hashes longos | `[FILTERED]`, inteiros |
+| Senhas, tokens, chaves, cookies, hashes longos, um valor do contexto sob nome de segredo | `[FILTERED]`, inteiros |
 
 Um número curto nunca mostra mais da metade dos dígitos. O ponto é `•`, não `*`, que o
 Discord lê como negrito. A `ERROR_SIGNAL_MASK=full` troca também o dado pessoal por
@@ -611,8 +675,9 @@ relatórios cobrirem todos os processos.
 
 ## Comparada com o Sentry e com a exception_notification
 
-O Sentry é um rastreador de erros completo; o Error Signal não é. A tabela serve para
-ajudar na escolha, não para dizer que se equivalem.
+O Sentry é um rastreador de erros completo; o Error Signal é um alerta ([Para que
+serve](#para-que-serve)). A tabela serve para ajudar na escolha, não para dizer que se
+equivalem.
 
 | | Error Signal | Sentry | [exception_notification](https://github.com/smartinez87/exception_notification) |
 |---|---|---|---|
@@ -620,6 +685,7 @@ ajudar na escolha, não para dizer que se equivalem.
 | Preço | Grátis (MIT) | Plano gratuito com cota de eventos; a integração com o Discord exige plano pago | Grátis (MIT) |
 | Para onde vão os erros | Discord | A interface dele, mais e-mail, Slack, Discord (pago) e outros | E-mail, Slack, Teams, um webhook e outros; sem notificador para o Discord |
 | Como se conecta | `Rails.error`, mais ganchos no rake e no `rails runner` | SDK com integrações para Rails, Rack, jobs e rake | Middleware do Rack e integrações com jobs |
+| Num alerta | Mensagem, linha de código, backtrace da app, causas, contexto, rota, processo, ID do usuário, pessoas atingidas | Tudo isso, mais parâmetros, headers, breadcrumbs e os dados do usuário, por evento | Mensagem, backtrace, parâmetros, sessão e ambiente |
 | Agrupamento | Classe + primeira linha da app + mensagem normalizada | Fingerprint pelo stack trace, juntar e separar na interface | Opcional, por classe e mensagem ou backtrace |
 | Erros repetidos | 1ª, 2ª, 4ª, 8ª... ocorrência de uma rajada | Regras de alerta | 1ª, 2ª, 4ª, 8ª... ocorrência |
 | Novos e que voltaram | Sim, 30 dias no `Rails.cache` | Sim, com histórico completo | Não |
@@ -645,7 +711,8 @@ Muito pouco. Por requisição, uma escrita e uma restauração de uma variável 
 (um middleware minúsculo deixa o env da requisição ao alcance, para o User-Agent, o ID da
 requisição e a rota). Por erro reportado, os filtros, um SHA-256 de um texto curto, uma
 leitura de cache e até três incrementos, mais algumas escritas quando um grupo começa uma
-rajada. O POST roda numa thread com timeouts curtos e, de propósito, fora do Active Job:
+rajada, e mais uma leitura quando o usuário é conhecido (e uma escrita para uma pessoa
+ainda não contada). O POST roda numa thread com timeouts curtos e, de propósito, fora do Active Job:
 se a fila cair, é justamente quando você quer saber. As únicas dependências são
 `activesupport` e `railties`.
 
@@ -675,12 +742,14 @@ cabe](#quando-não-cabe)). Se o Discord recusar o arquivo, a mensagem sai sem el
 <details>
 <summary><b>O que sai da minha app?</b></summary>
 
-Só o que você vê nas mensagens e nos arquivos anexados: a classe da exceção, a mensagem, o
-local e as linhas do backtrace já sanitizados, a origem, o `Controller#action`, o padrão
-da rota (`GET /orders/:id`) e o ID da requisição, a classe e o ID do job, o nome da task,
-a release, o nome da app e o ambiente, mais os textos e campos que você passar ao
-`ErrorSignal.message`, também sanitizados. Nunca parâmetros, headers, a URL, cookies,
-sessão, usuário ou contexto próprio. O cache guarda só contagens e amostras sanitizadas.
+Só o que você vê nas mensagens e nos arquivos anexados: a classe da exceção, a mensagem, a
+linha de código, o local e as linhas do backtrace, as causas, o contexto que o seu código
+passa (com as chaves de nome de segredo filtradas), a origem, o `Controller#action`, o
+padrão da rota (`GET /orders/:id`) e o ID da requisição, a classe e o ID do job, o nome da
+task, o ID do usuário, o processo, a release, o nome da app e o ambiente, mais os textos e
+campos que você passar ao `ErrorSignal.message`, tudo sanitizado. Nunca parâmetros,
+headers, a URL, cookies ou sessão. O cache guarda só amostras sanitizadas, contagens e
+hashes curtos dos IDs de usuário.
 
 </details>
 
@@ -701,6 +770,16 @@ pessoal inteiro ([Mascarado, não apagado](#mascarado-não-apagado)).
 
 Não. Ela funciona sozinha, ou ao lado do Sentry, da solid_errors ou de qualquer outro
 assinante do `Rails.error`.
+
+</details>
+
+<details>
+<summary><b>Ela substitui o Sentry?</b></summary>
+
+Substitui o alerta, não o rastreador. Se você só lê os e-mails do Sentry e nunca abre a
+interface dele, o Error Signal pode bastar. Se você investiga os erros lá (cada evento com
+a requisição, meses de histórico, desempenho), mantenha o Sentry e deixe o Error Signal
+postar no Discord ([Para que serve](#para-que-serve)).
 
 </details>
 

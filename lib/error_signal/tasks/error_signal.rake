@@ -120,6 +120,11 @@ namespace :error_signal do
     h.line "ERROR_SIGNAL_IGNORE_SOURCES", config.ignored_sources.join(", ").presence || "(none besides the cache stores)"
     h.line "ERROR_SIGNAL_REPORT_HANDLED", h.setting("ERROR_SIGNAL_REPORT_HANDLED",
       config.report_handled? ? "yes" : "no: only what the app did not rescue", default: "default")
+    h.line "ERROR_SIGNAL_CONTEXT", h.setting("ERROR_SIGNAL_CONTEXT",
+      config.context? ? "yes: the alert shows the context the app passes" : "no", default: "default")
+    h.line "ERROR_SIGNAL_USER", h.setting("ERROR_SIGNAL_USER",
+      config.user? ? "yes: the user id (context, current_user or Current.user) and the people count" : "no", default: "default")
+    h.line "Process", config.process_name || "(none: set ERROR_SIGNAL_PROCESS, or DYNO from Dokku or Heroku)"
     rules = ErrorSignal.ignore_rules.size
     h.line "ErrorSignal.ignore_if", rules.zero? ? "(no rules)" : "#{rules} rule(s)"
     h.line "ERROR_SIGNAL_PII_RULES", packs.any? ? packs.join(", ") : "(none: global rules only)"

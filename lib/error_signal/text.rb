@@ -42,6 +42,37 @@ module ErrorSignal
       []
     end
 
+    # Files larger than this are not read for a code line.
+    SOURCE_FILE_LIMIT = 1_000_000
+    SOURCE_LINE = /\A(?<path>.+?):(?<line>\d+)(?::in |\z)/
+
+    # The code around an app backtrace line ("app/models/order.rb:42:in
+    # 'charge'"), read from the file under Rails.root: [[number, text]] for
+    # the lines from `around` before to `around` after. Empty when the file
+    # is gone or changed (a deploy in between), or is not the app's.
+    def source_lines(app_line, around: 0)
+      match = SOURCE_LINE.match(app_line.to_s)
+      root = app_root
+      return [] if match.nil? || root.nil?
+
+      path = File.expand_path(match[:path], root)
+      return [] unless path.start_with?(root) && File.file?(path) && File.size(path) <= SOURCE_FILE_LIMIT
+
+      number = match[:line].to_i
+      first = [ number - around, 1 ].max
+      last = number + around
+      lines = []
+      File.foreach(path).with_index(1) do |text, index|
+        next if index < first
+        break if index > last
+
+        lines << [ index, text.chomp ]
+      end
+      lines.any? { |index, _| index == number } ? lines : []
+    rescue StandardError
+      []
+    end
+
     # 1st, 2nd, 3rd, 4th, 11th... in English; 1ª, 2ª... in Portuguese ("vez"
     # is feminine). Written here instead of Integer#ordinalize, which goes
     # through the app's I18n setup.

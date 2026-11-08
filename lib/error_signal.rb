@@ -12,6 +12,8 @@ require_relative "error_signal/version"
 require_relative "error_signal/messages"
 require_relative "error_signal/config"
 require_relative "error_signal/text"
+require_relative "error_signal/context_text"
+require_relative "error_signal/person"
 require_relative "error_signal/sanitizer"
 require_relative "error_signal/fingerprint"
 require_relative "error_signal/filters"
@@ -43,7 +45,8 @@ require_relative "error_signal/subscriber"
 #   1. filters: webhook and environment, severity, 4xx request errors,
 #      ignored classes, crawlers (Filters);
 #   2. fingerprint: class + first app line + normalized message (Fingerprint);
-#   3. counting in Rails.cache: burst, day, spike, new/regressed (Tracker);
+#   3. counting in Rails.cache: burst, day, spike, new/regressed, and the
+#      people affected when the user is known (Tracker, Person);
 #   4. a post on the 1st, 2nd, 4th, 8th... occurrence of a burst, and one
 #      spike message per 5-minute window (Alert, Delivery).
 #
@@ -53,8 +56,9 @@ require_relative "error_signal/subscriber"
 #   down must not become an app error.
 # - Does not block the request. The POST runs in a separate thread with
 #   short timeouts; per error the request pays a few cache operations.
-# - No PII. The message, the location, the backtrace and the ids go through
-#   a sanitizer before leaving, and the report samples before they are
+# - No PII. The message, the location, the code line, the backtrace, the
+#   causes, the context and the ids go through a sanitizer before leaving
+#   (of the user, only the id), and the report samples before they are
 #   stored. If it fails, the text does not leave (fail-closed).
 #
 # The configuration is in environment variables (see Config and the README).
@@ -268,11 +272,13 @@ module ErrorSignal
     def deliver(error, handled:, severity:, context:, source:)
       fingerprint = Fingerprint.for(error)
       occurrence = Tracker.track(fingerprint)
+      person = Person.of(context)
+      occurrence.people = Tracker.track_person(fingerprint.id, occurrence.burst, person.id) if person && !occurrence.degraded?
       level = Config.normalize_level(severity) || "error"
 
       if occurrence.post
         Delivery.post_async(Alert.build(error, fingerprint: fingerprint, occurrence: occurrence, level: level,
-          handled: handled, context: context, source: source))
+          handled: handled, context: context, source: source, person: person))
       end
       Delivery.post_async(Alert.spike(error, fingerprint: fingerprint)) if occurrence.spike
     end
